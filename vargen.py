@@ -1,3 +1,16 @@
+# Copyright 2012 William Dang.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http:#www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 from locale import str
 import os,sys,re,io
 
@@ -37,7 +50,7 @@ def Documentation():
       operation    = iteration | repetition;
 
 
-   Usage Examples:
+   Operations:
     iteration: @i, j(contents)
       Iterates contents, substituting and evaluating itervar on each pass
 
@@ -51,7 +64,7 @@ def Documentation():
       Duplicates contents count times, substituting and evaluating itervar on each pass
 
 
-  NOTES AND LIMITATIONS:
+  Notes and limitations:
     1. @0(<contents>) generates nothing
     2. Trailing comma's are removed: commas followed by closing
     brackets from the generated code will be replaced:
@@ -61,105 +74,6 @@ def Documentation():
     3. Invalid ranges havent been tested.
     4. operations must be contained on a single line
     5. A space following @ will probably break vargen
-
-  Example 0A: Special behavior of no trailing characters in an operation.
-    @START 1,3
-    @(T$ member$)
-    @STOP
-
-  Result 0A:
-    T1 member1, T2 member2, T3 member3
-
-  Example 0B: Special behavior of trailing characters in an operation.
-    @START 1,3
-    @(T$ member$; )
-    @STOP
-
-  Result 0B:
-    T1 member1; T2 member2; T3 member3;
-
-  Example 1: Behavior of [1,3] iteration operation
-    @START 1,3
-    template<@(class T$)> struct List$;
-    @STOP
-
-  Result 1:
-    template<class T1> struct List1;
-    template<class T2> struct List2;
-    template<class T3> struct List3;
-
-  Example 2: Behavior of 3-repetition operation
-    @START 1,3
-    template<@3(class T$)> struct List$;
-    @STOP
-
-  Result 2:
-    template<class T1, class T1, class T1> struct List1;
-    template<class T2, class T2, class T2> struct List2;
-    template<class T3, class T3, class T3> struct List3;
-
-
-  Example 3: Behavior of [1,4] iteration with parameters
-    @START 1,4
-    template<@(class T$)>
-    struct Args<@(class T$), @$END - $(Empty)>;
-    @STOP
-
-  Result 3:
-    template<class T1>
-    struct Args<T1,Empty,Empty,Empty>{};
-
-    template<class T1, class T2>
-    struct Args<T1,T2,Empty,Empty>{};
-
-    template<class T1, class T2, class T3>
-    struct Args<T1,T2,T3,Empty>{};
-
-    template<class T1, class T2, class T3, class T4>
-    struct Args<T1,T2,T3,T4>{};
-
-   Example 4: Custom iterations
-    @START 1, 3
-
-    template<@(class T$)>
-    struct Args$ : public Args$-1{
-    T$ a$;
-
-    Args$(@(T$ p$))
-    : Args$-1(@,$-1(p$)),
-     a$(p$){}
-    };
-    @STOP
-
-  Result 4:
-    template<class T1>
-    struct Args1 : public Args0{
-      T1 a1;
-
-      Args1(T1 p1)
-       : Args0(),
-         a1(p1){}
-    };
-
-
-    template<class T1, class T2>
-    struct Args2 : public Args1{
-      T2 a2;
-
-      Args2(T1 p1, T2 p2)
-       : Args1(p1),
-         a2(p2){}
-    };
-
-
-    template<class T1, class T2, class T3>
-    struct Args3 : public Args2{
-      T3 a3;
-
-      Args3(T1 p1, T2 p2, T3 p3)
-       : Args2(p1, p2),
-         a3(p3){}
-    };
 """
 
 
