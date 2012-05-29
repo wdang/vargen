@@ -11,7 +11,7 @@ Check the examples/ folder for examples of using vargen syntax.
   aren't fully supported in most C++ compilers so writing template libraries
   that require unique specializations can be a chore and error prone. 
   I needed a quick and dirty script to generate boilerplate template code using a simple syntax.
-  vargen isn't unique, there are alternatives that are probably more feature complete:
+  vargen isn't unique, there are alternatives that are more feature complete:
   
   [boost preprocessor](http://www.boost.org/doc/libs/1_49_0/libs/preprocessor/doc/index.html)
   
