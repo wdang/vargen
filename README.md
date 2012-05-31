@@ -7,7 +7,7 @@ Requires python 3.2.2
 Check the examples/ folder for examples of using vargen syntax.
 
 ### Why
-  Full support for variable argument(C++11) class and function templates 
+  Support for variable argument(C++11) class and function templates 
   aren't fully supported in most C++ compilers so writing template libraries
   that require unique specializations can be a chore and error prone. 
   I needed a quick and dirty script to generate boilerplate template code using a simple syntax.
