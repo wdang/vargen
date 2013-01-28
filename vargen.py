@@ -1,456 +1,219 @@
-# Copyright 2012 William Dang.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#    http:#www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from locale import str
-import os,sys,re,io
+import os, sys, re, io
+import itertools
 
-#DISCLAIMER: code below is not pretty :(
+def usage():
+    """Variable argument generator.
+      vargen.py inputfile [outputfile = stdout]
+    """
 
-def Usage():
-  """Variable argument c++ class template generator.
-  vargen.py [options] [input] [output = stdout]
+def braceindices(s, left='(', right=')'):
+    """
+    returns a 2-tuple representing the indexes of
+    the first 'left' opening bracket and it's corresponding
+    'right' closing bracket. None is returned if the first left bracket is
+    unbalanced
+    """
+    open_braces = []
+    for i, c in enumerate(s):
+        if c == left:
+            open_braces.append(i)
+        elif c == right and len(open_braces) is not 0:
+            start = open_braces.pop()
+            if len(open_braces) is 0:
+                return (start, i)
+    return None
 
-  options:
-   -f inject generated code into [input] instead of stdout
-  """
-  return 1
+def bracematch(s, left='(', right=')'):
+    """
+    returns a substring of s, inside the pair of matching braces
+    relative to the first opening brace.
+    None is returned if the first left brace is  unbalanced
+    """
+    open_braces = []
+    for i, c in enumerate(s):
+        if c == left:
+            open_braces.append(i + 1)
+        elif c == right and len(open_braces) is not 0:
+            start = open_braces.pop()
+            if len(open_braces) is 0:
+                return s[start:i]
+    return None
 
-def Documentation():
-  """Variable argument c++ class template generator.
-  vargen.py [options] [input] [output = stdout]
+def dollarsub(line, number):
+    # matches $ prefixed or postfixed with a simple mathematical expression
+    # ie.
+    # 2+3+4 $ - 5 * 6
+    expression = re.compile(r'(?P<value>\$\s*[\-\+\*\/]*\s*[\-0-9]+)')
+    #expression = re.compile(r'(?P<value>[0-9\-]*[\-\+\*\/]{0,1}\$[\-\+\*\/]{1}[0-9\-]+)')
+    match = re.findall(expression, line)
+    for s in re.findall(expression, line):
+        line = re.sub(expression, str(eval(s.replace('$', str(number)))), line, 1)
+    return line.replace('$', str(number))
 
-  options:
-   -f inject generated code into [input] instead of stdout
+def evaldollarsigns(s,number):
+  '''replaces all occurences of $ with the given number and evaulates infix expressions
+  '''
+  #xpr = re.compile(r'(\$[\-\+\*\/][\-0-9]*)')
+  xpr = re.compile(r'(?P<value>\$\s*[\-\+\*\/]*\s*[\-0-9]+)')
+  for m in re.findall(xpr,s):
+    s = re.sub(xpr,str(eval(m.replace('$',str(number)))),s,1)
+  return s.replace('$',str(number))
 
-  Grammar (incomplete): vargen is a inclusive iterator
-      over a range specified in the start clause of the [input] file.
+def parseopstring(s,bounds):
+    def noop(contents,args):
+        return contents
 
-      comma        = ',';
-      number       = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
-      whitespace   = ? whitespace characters ? ;
-      lowerbound   = number
-      upperbound   = number
-      start clause = '@START', [whitespace], lowerbound, comma, [whitespace], upperbound;
-      stop clause  = '@STOP';
-      operator     = ['+'|'-'|'*'|'/'];
-      itervar      = '$',[operator], [number]
-      contents     = iteration | letter | number
-      iteration    = '@', [lowerbound|itervar], [comma], [number|current], '(', contents, ')';
-      repetition   = '@', number, '(', contents, ')';
-      operation    = iteration | repetition;
+    def repeat(contents,args):        
+        separator = '' if contents[-1] == ' ' else ', '
+        return separator.join(itertools.repeat(contents,args[0]))
 
+    def iterate(contents,args):        
+        separator = '' if contents[-1] == ' ' else ', '
+        lower,upper = args
+        s= separator.join(evaldollarsigns(contents, i) for i in range(lower, upper + 1))
+        return s
+    
+    begin,end = bounds
+    contents = bracematch(s)
+    #iterate
+    m = re.search(r'@\s*([\$\+\-\/\+]*[0-9]*)\s*,\s*([\$\+\-\/\+]*[0-9]*)\s*\(',s)
+    if m:
+      arg1,arg2 = m.groups()
+      if arg1 is '': arg1 = str(begin)
+      if arg2 is '': arg2 = '$'
+      return (iterate,(arg1,arg2),contents)
 
-   Operations:
-    iteration: @i, j(contents)
-      Iterates contents, substituting and evaluating itervar on each pass
+    #no arg iterate
+    m = re.search(r'@\s*\(',s)
+    if m:
+      return (iterate,(str(begin),'$'),contents)
 
-      iteration overloads:
-        @i, j(contents) = explicit ranged iteration from i to j inclusive
-        @(contents)     = iterate from $BEGIN to itervar. Shorthand for @$BEGIN,$()
-        @i,(contents)   = iterate iff itervar >= i
-        @,j(contents)   = iterate iff itervar <= j
-
-    repetition: @count(contents)
-      Duplicates contents count times, substituting and evaluating itervar on each pass
-
-
-  Notes and limitations:
-    1. @0(<contents>) generates nothing
-    2. Trailing comma's are removed: commas followed by closing
-    brackets from the generated code will be replaced:
-       ,>  becomes >
-       ,)  becomes )
-       ,,} becomes }
-    3. Invalid ranges havent been tested.
-    4. operations must be contained on a single line
-    5. A space following @ will probably break vargen
-"""
-
-
-_FIX_LEADING_COMMAS = re.compile(r'[,]+\s*(?P<value>[>\)])')
-
-def ErrorExit(msg):
-  print("%s\n%s: %s" % (msg,os.path.split(os.path.abspath(__file__))[1],Usage.__doc__))
-
-  return 1
-
-
-def ExtractBetween(open,close,s):
-  """ Returns string between first
-      matching 'open' and 'close' pairs of brackets
-  """
-  braces = 0
-  buf = []
-  for c in s:
-    print(c)
-    if c == open:
-
-      if braces > 0:
-        buf.append(c)
-      braces += 1
-      continue
-    elif c == close:
-      braces -= 1
-      if braces == 0:
-        break
-    if braces > 0:
-      buf.append(c)
-  return ''.join(buf)
+    #repeater
+    m = re.search(r'@\s*([\$\+\-\/\+]*[0-9]*)\s*\(',s)
+    if m:
+      return (repeat,m.groups(0),contents)
+    return (noop,(),'')
 
 
-class Operation:
-  def __init__(self, contents):
-    if contents[-1:] == ' ':
-      self.__separator = ' '
+class _Operation:
+    def __init__(self,filename,line,s,linenumber,column,bounds):
+        self.string = s
+        self.file = filename
+        self.column = (column,column+len(s))
+        self.bounds = bounds
+        self.linenumber = linenumber
+        self.line = line
+        self.func,self.args,self.contents = parseopstring(s,bounds)
+
+    def __len__(self):
+      return self.isvalid
+
+    def __str__(self):
+      return '{0}({1}):{2}'.format(self.file,self.line,self.args)
+
+    def __call__(self, line, bounds, current):
+        begin,end = bounds
+        args = tuple([eval(arg.replace('$',str(current))) for arg in self.args])        
+        result = self.func(self.contents, args)
+        return line.replace(self.string,result)
+
+
+
+def extract(filename,block, line_start, bounds):
+    begin,end = bounds
+    rv = io.StringIO()
+    regex = re.compile(r'\$\s*[\-\+\*\/]*\s*[\-0-9]*')
+    lineops={}
+    for offset, line in enumerate(block):
+        linenumber = line_start + offset
+        ops = []
+        lineops[linenumber] = {k:'' for k in range(begin,end)}
+        for i in [num for num, c in enumerate(line) if c == '@']:
+            bracebegin,braceend = braceindices(line[i:])
+            part = line[i:i + braceend + 1]# '@arg1,arg2(<contents>)'
+            contents = bracematch(line[i:])# '<contents>'
+            column_range = (i, i + braceend)
+            ops.append(_Operation(filename,line,part,linenumber,i,bounds))
+
+        if not ops:
+          ops.append(lambda line,bounds,current: line)
+
+        for i in range(begin,end):
+            subbedline = line
+            for o in ops:
+                subbedline = o(subbedline,bounds,i)
+            lineops[linenumber][i] = subbedline
+
+    for i in range(begin,end):
+      for offset,line in enumerate(block):
+        linenumber = offset+line_start
+        rv.write(evaldollarsigns(lineops[linenumber][i],i))
+     
+    return rv.getvalue()
+
+class _ParseException(Exception):
+    def __init__(self,message,filename,linenumber):
+        self.filename = filename
+        self.line = linenumber
+        self.value = message
+
+    def __str__(self):
+        return  repr('in {0}({1}):{2}'.format(self.filename,self.line,self.value))
+
+def main():
+    start = re.compile(r'\s*@START\s+(?P<begin>[0-9]+)\s*,\s*(?P<end>[0-9]+)\s*$')
+    code = []
+    out = io.StringIO()
+    inside_codeblock = False
+    bounds = ()
+    line_start = 1
+    for num, line in enumerate(open(sys.argv[1], 'r').readlines()):
+        if "@START" in line:
+            if inside_codeblock: 
+                raise _ParseException('Nested blocks not supported',sys.argv[1],num+1)
+
+            m = start.match(line)
+            if not m: 
+                raise _ParseException('Invalid @START declaration',sys.argv[1],num+1)
+
+            begin,end = int(m.group('begin')), int(m.group('end'))
+            if end - begin <= 0: 
+                raise _ParseException("Invalid range",sys.argv[1], num + 1)
+
+            bounds = (begin, end + 1)#inclusive
+            inside_codeblock = True
+            line_start = num
+            continue
+
+        elif "@STOP" in line:
+            if not inside_codeblock: 
+                raise _ParseException('@START not found for corresponding @STOP',sys.argv[1], num + 1)
+            out.write(extract(sys.argv[1],code, line_start, bounds))
+            inside_codeblock = False
+            bounds = ()
+            code = []
+            continue
+
+        if inside_codeblock: 
+            code.append(line)
+        else: 
+            out.write(line)
+
+    if len(sys.argv) > 2:
+        f = open(sys.argv[2], 'wt')
+        print("Output written to %s" % os.path.abspath(sys.argv[2]))
+        out.seek(0, 0)
+        with open(sys.argv[2], 'wt') as f:
+            for line in out.readlines():
+                f.write(line)
     else:
-      self.__separator = ', '
-    self.__contents =  contents
-    pass
-
-
-  def data(self):
-
-    return self.__contents
-
-  def separator(self):
-    return self.__separator
-
-  def __str__(self):
-    return self.__string
-
-  def __call__ (self, begin, end):
-     pass
-
-class Repetition(Operation):
-  def __init__(self, contents, count):
-    super(Iteration,self).__init__(contents)
-    self.__count = count
-
-  def __str__(self):
-    return "Repetition(%s): %s" % (str(self.__count), self.data())
-
-  def __call__(self, begin, end):
-     # TODO allow arbritary number of whitespace
-     return self.__separator.join([self.__contents for k in range(0,end)]).replace("$",str(current))
-
-class Iteration(Operation):
-  def __init__(self, contents, begin, end):
-    super(Iteration,self).__init__(contents)
-    self.__p1 = begin
-    self.__p2 = end
-
-
-  def __str__(self):
-    return "Iteration(%s,%s): %s" % (self.__p1,self.__p2,self.data())
-
-  def __call__(self, begin, end):
-     if len(self.__p1) == 0:
-       self.__p1 = begin
-
-     if len(self.__p2) == 0:
-       self.__p2 = end
-
-
-     #begin = int(eval(str(self.__p1).replace('$',str(i))))
-     #end = int(eval(str(self.__p2).replace('$',str(i))))
-     return self.separator().join([self.data().replace("$",str(i)) for i in range(int(self.__p1),int(self.__p2))])
-
-def ExtractIterators(line):
-  """ Returns a tuple of operations:
-  0. a list of operation strings found in the line
-  1. a list of operation parameter pairs
-  2. a list of strings to iterate over
-  3. the original line substituted in a printf format
-  """
-  ops = []
-  operations = []
-  parameters = []
-  contents = []
-
-  # balance paranthesis
-  braces = 0
-
-  # between @ and the matching paranthesis
-  # of the first opening after @
-  inside = False
-
-  # -1 : dont collect anything
-  #  0 : collect on next iteration
-  #  1 : collect for param1
-  #  2 : collect for param2
-  collect_params = -1
-  collect_contents = False
-
-
-  # How this thing extracts:
-  # @ param1 , param2 ( content_buf )
-  # ^                               ^
-  # |                               |
-  #  -------------------------------
-  #                |
-  #               buf
-  #
-  buf = []
-  param1 = []
-  param2 = []
-  content_buf = []
-  repetition = False
-  for i,c in enumerate(line):
-    if c == '@':
-      inside = True
-      collect_params = 0
-
-    elif c == '(' and inside:
-      if braces == 0:
-        collect_contents = True
-        if collect_params == 1:
-          repetition = True
-        collect_params = -1
-        braces = 1
-        buf.append(c)
-        continue
-      braces += 1
-
-    elif c == ')' and inside:
-      braces -= 1
-      if braces == 0:
-        buf.append(c)
-
-        operation_str = ''.join(buf)
-        line = line.replace(operation_str,"%s" )
-
-        #append
-        if repetition and len(param1) != 0:
-          #ops.append(Repetition(''.join(content_buf),''.join(param1)))
-          operation_str = "R" + operation_str
-
-        operations.append(operation_str)
-        parameters.append((''.join(param1),''.join(param2)))
-        contents.append(''.join(content_buf))
-        #ops.append(Iteration(''.join(content_buf),''.join(param1),''.join(param2)))
-
-        #reset
-        inside = False
-        collect_contents = False
-        collect_params = -1
-        buf = []
-        param1 = []
-        param2 = []
-        content_buf = []
-
-    elif c == ',' and inside and collect_params:
-      buf.append(c)
-      collect_params = 2
-      continue
-
-    if inside:
-      buf.append(c)
-
-    if collect_contents:
-      content_buf.append(c)
-
-    if collect_params == 1:
-      param1.append(c)
-
-    if collect_params == 2:
-      param2.append(c)
-
-    if inside and collect_params==0:
-      collect_params = 1
-
-
-
-  return (operations,parameters,contents,line)
-
-def SubstituteDollarSigns(line,iteration):
-  expression = re.compile(r'(?P<value>\$[\-\+\*\/]{1}[0-9\-]+)')
-  match = re.findall(expression,line)
-  if len(match) != 0:
-    for s in match:
-      line = re.sub(expression,str(eval(s.replace('$',str(iteration)))),line,1)
-  return line.replace('$',str(iteration))
-
-
-def Duplicate(content,count, begin, end, separator=', '):
-  expression = re.compile(r'(?P<value>\$[\-\+\*\/]{1}[0-9\-]+)')
-  buf = []
-  return separator.join(buf)
-
-def Iterate(content,begin,end,separator = ', '):
-  expression = re.compile(r'(?P<value>\$[\-\+\*\/]{1}[0-9\-]+)')
-  buf = []
-  for i in range(begin,end):
-    s = content
-    match = re.findall(expression,s)
-    if len(match) != 0:
-      for m in match:
-        expr = str(eval(m.replace('$',str(i))))
-        s = s.replace(m,expr)
-    while '$' in s:
-
-      s = s.replace('$',str(i))
-    buf.append(s)
-  return separator.join(buf)
-
-def ParseLine(line): pass
-
-
-
-def Generate(lines,begin,end):
-
-  # holds the final generated code
-  out = io.StringIO()
-
-  # Inclusive upper bound
-  end+=1
-
-  expression = re.compile(r'(?P<value>\$[\-\+\*\/]{1}[0-9\-]+)')
-  operations = []
-  for i in range(begin,end):
-    for num,line in enumerate(lines):
-      # operation[0] = list of operation strings
-      # operation[1] = list of pairs, representing iteration limits
-      # operation[2] = list of strings to iterate over
-      # operation[3] = substituted line in printf format
-      operation = ExtractIterators(line)
-
-
-      op_len = len(operation[0])
-      # No iteration operations found just substitute iteration
-      # symbols
-      if op_len == 0:
-        out.write(SubstituteDollarSigns(line,i))
-        continue
-
-      # Evaluate our iteration parameters for each operation
-      parameters = operation[1]
-      contents = operation[2]
-      subs =[]
-
-      # call each operation
-      for j in range(0,op_len):
-        lower = begin
-        upper = i
-        p = parameters[j]
-
-        # Get iteration parameters
-        if p[0] != '':
-          lower = eval(p[0].replace('$',str(i)))
-        if p[1] != '':
-          upper = eval(p[1].replace('$',str(i)))
-
-        # Inclusive upper bound: +1
-        upper = min(upper,i) + 1
-
-        # Custom delimiter?
-        separator = ', '
-        if contents[j][-1:] == " ":
-          separator = ' '
-
-        # repetition or iteration?
-        if operation[0][j][:1] == "R":
-          generated = separator.join([contents[j] for k in range(begin,upper)])
-          subs.append(generated.replace('$',str(upper)))
-        else:
-          subs.append(Iterate(contents[j],lower,upper,separator))
-      # substitute generated code
-      line = operation[3] % tuple(subs)
-
-      # final output
-      out.write(SubstituteDollarSigns(line,i))
-
-  out.seek(0,0)
-  result = out.getvalue()
-  out.close()
-  return result
-
-def Main():
-  argc = len(sys.argv)
-  if(argc == 1):
-     return ErrorExit("No input files!")
-
-  if(argc == 2 and sys.argv[1] == '-h'):
-    print(Documentation.__doc__)
-    return 0
-
-
-  START = re.compile(r'\s*@START\s+(?P<begin>[0-9]+)\s*,\s*(?P<end>[0-9]+)\s*$')
-  STOP = re.compile('^@STOP\s*$')
-
-  code = []
-  input = []
-  #resulting output
-  out = io.StringIO()
-
-  #inside @START and @STOP
-  collecting = False
-
-  #lower and upper bounds
-  begin = 0
-  end = 0
-
-  recursion = -1
-  blocks = []
-  with open(sys.argv[1],'r') as f:
-    for line in f:
-      input.append(line)
-
-
-  for line_num,line in enumerate(open(sys.argv[1],'r').readlines()):
-
-    if "@START" in line:
-      m = START.match(line)
-      begin = int(m.group('begin'))
-      end = int(m.group('end'))
-      if end - begin <= 0:
-        return ErrorExit("Invalid range in %s(%d): %s" % (sys.argv[1],line_num+1,line))
-      recursion += 1
-      blocks.append([])
-      collecting = True
-      continue
-
-    if "@STOP" in line:
-      collecting = False
-      recursion -=1
-      out.write(Generate(code,begin,end))
-      begin = 0
-      end = 0
-      code = []
-      continue
-
-    if recursion > -1:
-      blocks[recursion].append(line)
-      code.append(line)
-    else:
-      out.write(line)
-
-  if collecting:
-    return ErrorExit("@STOP was not found!")
-
-  if len(sys.argv) > 2:
-    f = open(sys.argv[2],'wt')
-    print("Writing to %s" % os.path.abspath(sys.argv[2]))
-    out.seek(0,0)
-    with open(sys.argv[2],'wt') as f:
-      for line in out.readlines():
-        f.write(line)
-  else:
-    print(out.getvalue())
-  out.close()
+        print(out.getvalue())
+    out.close()
 
 if __name__ == '__main__':
-  if sys.version_info[0] != 3:
-    print("vargen.py requires python 3.2.2")
-    pass
-  else:
-    Main()
+    if sys.version_info[0] != 3:
+        print("vargen.py requires python 3")        
+    elif len(sys.argv) == 1:
+        print("no input files\n",usage.__doc__)
+    else: 
+        main()
